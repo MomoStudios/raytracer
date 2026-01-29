@@ -4,7 +4,7 @@ A path tracer written in Rust with both CPU and GPU (wgpu/WGSL) backends.
 
 ![Demo render](assets/demo.png)
 
-https://github.com/user-attachments/assets/demo.mp4
+![Orbit animation](assets/demo.gif)
 
 ## Features
 
