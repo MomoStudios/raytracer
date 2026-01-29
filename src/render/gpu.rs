@@ -56,10 +56,16 @@ struct GpuVec3 {
 struct GpuSphere {
     center: GpuVec3,       // 16 bytes, offset 0
     radius: f32,           // 4 bytes, offset 16
-    _pad1: [f32; 3],       // 12 bytes padding for color alignment, offset 20
+    _pad1a: f32,           // 4 bytes, offset 20
+    _pad1b: f32,           // 4 bytes, offset 24
+    _pad1c: f32,           // 4 bytes, offset 28
     color: GpuVec3,        // 16 bytes, offset 32
     reflectivity: f32,     // 4 bytes, offset 48
-    _pad2: [f32; 3],       // 12 bytes, offset 52 = 64 bytes total
+    _pad2a: f32,           // 4 bytes, offset 52
+    _pad2b: f32,           // 4 bytes, offset 56
+    _pad2c: f32,           // 4 bytes, offset 60
+    _pad3: GpuVec3,        // 16 bytes, offset 64 (for vec3 alignment) = 80 bytes
+    _pad4: GpuVec3,        // 16 bytes, offset 80 = 96 bytes total
 }
 
 #[repr(C)]
@@ -112,10 +118,12 @@ impl Renderer for GpuRenderer {
         let spheres: Vec<GpuSphere> = scene.spheres.iter().map(|s| GpuSphere {
             center: GpuVec3 { x: s.center.x as f32, y: s.center.y as f32, z: s.center.z as f32, _pad: 0.0 },
             radius: s.radius as f32,
-            _pad1: [0.0; 3],
+            _pad1a: 0.0, _pad1b: 0.0, _pad1c: 0.0,
             color: GpuVec3 { x: s.color.r as f32, y: s.color.g as f32, z: s.color.b as f32, _pad: 0.0 },
             reflectivity: s.reflectivity as f32,
-            _pad2: [0.0; 3],
+            _pad2a: 0.0, _pad2b: 0.0, _pad2c: 0.0,
+            _pad3: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 },
+            _pad4: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 },
         }).collect();
         
         // Triangulate polygons and combine with explicit triangles
@@ -151,7 +159,7 @@ impl Renderer for GpuRenderer {
         
         // Ensure we have at least one element for buffers
         let spheres = if spheres.is_empty() { 
-            vec![GpuSphere { center: GpuVec3 { x: 0.0, y: 0.0, z: -1000.0, _pad: 0.0 }, radius: 0.0, _pad1: [0.0; 3], color: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 }, reflectivity: 0.0, _pad2: [0.0; 3] }]
+            vec![GpuSphere { center: GpuVec3 { x: 0.0, y: 0.0, z: -1000.0, _pad: 0.0 }, radius: 0.0, _pad1a: 0.0, _pad1b: 0.0, _pad1c: 0.0, color: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 }, reflectivity: 0.0, _pad2a: 0.0, _pad2b: 0.0, _pad2c: 0.0, _pad3: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 }, _pad4: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 } }]
         } else { spheres };
         let triangles = if triangles.is_empty() {
             vec![GpuTriangle { v0: GpuVec3 { x: 0.0, y: 0.0, z: -1000.0, _pad: 0.0 }, v1: GpuVec3 { x: 0.0, y: 0.0, z: -1000.0, _pad: 0.0 }, v2: GpuVec3 { x: 0.0, y: 0.0, z: -1000.0, _pad: 0.0 }, color: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 }, reflectivity: 0.0, _pad1: 0.0, _pad2: 0.0, _pad3: 0.0, _pad4: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 } }]
@@ -343,10 +351,16 @@ struct Params {
 struct Sphere {
     center: vec4<f32>,
     radius: f32,
-    _pad1: vec3<f32>,
+    _pad1a: f32,
+    _pad1b: f32,
+    _pad1c: f32,
     color: vec4<f32>,
     reflectivity: f32,
-    _pad2: vec3<f32>,
+    _pad2a: f32,
+    _pad2b: f32,
+    _pad2c: f32,
+    _pad3: vec4<f32>,
+    _pad4: vec4<f32>,
 }
 
 struct Triangle {
@@ -364,7 +378,9 @@ struct Triangle {
 struct Light {
     position: vec4<f32>,
     intensity: f32,
-    _pad: vec3<f32>,
+    _pad1: f32,
+    _pad2: f32,
+    _pad3: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
