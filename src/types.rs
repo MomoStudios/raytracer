@@ -89,6 +89,31 @@ impl Color {
     }
 }
 
+/// Camera definition
+#[derive(Debug, Clone, Deserialize)]
+pub struct Camera {
+    pub position: Vec3,
+    pub look_at: Vec3,
+    #[serde(default = "default_up")]
+    pub up: Vec3,
+    #[serde(default = "default_fov")]
+    pub fov: f64,
+}
+
+fn default_up() -> Vec3 { Vec3::new(0.0, 1.0, 0.0) }
+fn default_fov() -> f64 { 60.0 }
+
+impl Default for Camera {
+    fn default() -> Self {
+        Camera {
+            position: Vec3::new(0.0, 0.0, 0.0),
+            look_at: Vec3::new(0.0, 0.0, -1.0),
+            up: default_up(),
+            fov: default_fov(),
+        }
+    }
+}
+
 /// Sphere geometry
 #[derive(Debug, Deserialize)]
 pub struct Sphere {
@@ -142,12 +167,20 @@ pub struct Scene {
     pub max_bounces: u32,
     #[serde(default = "default_render_time_ms")]
     pub render_time_ms: u64,
+    #[serde(default)]
+    pub camera: Option<Camera>,
 }
 
 fn default_width() -> u32 { 800 }
 fn default_height() -> u32 { 600 }
 fn default_max_bounces() -> u32 { 3 }
 fn default_render_time_ms() -> u64 { 500 }
+
+impl Scene {
+    pub fn get_camera(&self) -> Camera {
+        self.camera.clone().unwrap_or_default()
+    }
+}
 
 /// Ray for tracing
 pub struct Ray {

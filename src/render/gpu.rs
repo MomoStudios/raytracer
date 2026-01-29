@@ -39,131 +39,34 @@ impl GpuRenderer {
         
         Some(GpuRenderer { device, queue })
     }
-}
-
-// GPU data structures (must match shader)
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuVec3 {
-    x: f32,
-    y: f32,
-    z: f32,
-    _pad: f32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuSphere {
-    center: GpuVec3,       // 16 bytes, offset 0
-    radius: f32,           // 4 bytes, offset 16
-    _pad1a: f32,           // 4 bytes, offset 20
-    _pad1b: f32,           // 4 bytes, offset 24
-    _pad1c: f32,           // 4 bytes, offset 28
-    color: GpuVec3,        // 16 bytes, offset 32
-    reflectivity: f32,     // 4 bytes, offset 48
-    _pad2a: f32,           // 4 bytes, offset 52
-    _pad2b: f32,           // 4 bytes, offset 56
-    _pad2c: f32,           // 4 bytes, offset 60
-    _pad3: GpuVec3,        // 16 bytes, offset 64 (for vec3 alignment) = 80 bytes
-    _pad4: GpuVec3,        // 16 bytes, offset 80 = 96 bytes total
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuTriangle {
-    v0: GpuVec3,           // 16 bytes, offset 0
-    v1: GpuVec3,           // 16 bytes, offset 16
-    v2: GpuVec3,           // 16 bytes, offset 32
-    color: GpuVec3,        // 16 bytes, offset 48
-    reflectivity: f32,     // 4 bytes, offset 64
-    _pad1: f32,            // 4 bytes, offset 68
-    _pad2: f32,            // 4 bytes, offset 72
-    _pad3: f32,            // 4 bytes, offset 76
-    _pad4: GpuVec3,        // 16 bytes, offset 80 = 96 bytes total
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuLight {
-    position: GpuVec3,     // 16 bytes
-    intensity: f32,        // 4 bytes
-    _pad: [f32; 3],        // 12 bytes = 32 bytes total (16-byte aligned)
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuParams {
-    width: u32,
-    height: u32,
-    num_spheres: u32,
-    num_triangles: u32,
-    num_lights: u32,
-    max_bounces: u32,
-    sample: u32,
-    _pad: u32,
-    background: GpuVec3,
-}
-
-impl Renderer for GpuRenderer {
-    fn name(&self) -> &'static str {
-        "GPU"
-    }
     
-    fn render(&self, scene: &Scene, time_limit: Duration) -> RenderResult {
+    fn render_internal(&self, scene: &Scene, camera: &Camera, samples_limit: Option<u32>, time_limit: Option<Duration>) -> RenderResult {
         let width = scene.width;
         let height = scene.height;
         let total_pixels = (width * height) as usize;
         
-        // Convert scene to GPU format
-        let spheres: Vec<GpuSphere> = scene.spheres.iter().map(|s| GpuSphere {
-            center: GpuVec3 { x: s.center.x as f32, y: s.center.y as f32, z: s.center.z as f32, _pad: 0.0 },
-            radius: s.radius as f32,
-            _pad1a: 0.0, _pad1b: 0.0, _pad1c: 0.0,
-            color: GpuVec3 { x: s.color.r as f32, y: s.color.g as f32, z: s.color.b as f32, _pad: 0.0 },
-            reflectivity: s.reflectivity as f32,
-            _pad2a: 0.0, _pad2b: 0.0, _pad2c: 0.0,
-            _pad3: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 },
-            _pad4: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 },
-        }).collect();
+        // Compute camera basis vectors
+        let forward = camera.look_at.sub(&camera.position).normalize();
+        let right = forward.cross(&camera.up).normalize();
+        let up = right.cross(&forward).normalize();
         
-        // Triangulate polygons and combine with explicit triangles
-        let mut triangles: Vec<GpuTriangle> = scene.triangles.iter().map(|t| GpuTriangle {
-            v0: GpuVec3 { x: t.v0.x as f32, y: t.v0.y as f32, z: t.v0.z as f32, _pad: 0.0 },
-            v1: GpuVec3 { x: t.v1.x as f32, y: t.v1.y as f32, z: t.v1.z as f32, _pad: 0.0 },
-            v2: GpuVec3 { x: t.v2.x as f32, y: t.v2.y as f32, z: t.v2.z as f32, _pad: 0.0 },
-            color: GpuVec3 { x: t.color.r as f32, y: t.color.g as f32, z: t.color.b as f32, _pad: 0.0 },
-            reflectivity: t.reflectivity as f32,
-            _pad1: 0.0, _pad2: 0.0, _pad3: 0.0, _pad4: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 },
-        }).collect();
+        // Convert scene to GPU format
+        let spheres: Vec<GpuSphere> = scene.spheres.iter().map(|s| GpuSphere::from_sphere(s)).collect();
+        let mut triangles: Vec<GpuTriangle> = scene.triangles.iter().map(|t| GpuTriangle::from_triangle(t)).collect();
         
         for poly in &scene.polygons {
             if poly.vertices.len() >= 3 {
                 for i in 1..poly.vertices.len() - 1 {
-                    triangles.push(GpuTriangle {
-                        v0: GpuVec3 { x: poly.vertices[0].x as f32, y: poly.vertices[0].y as f32, z: poly.vertices[0].z as f32, _pad: 0.0 },
-                        v1: GpuVec3 { x: poly.vertices[i].x as f32, y: poly.vertices[i].y as f32, z: poly.vertices[i].z as f32, _pad: 0.0 },
-                        v2: GpuVec3 { x: poly.vertices[i+1].x as f32, y: poly.vertices[i+1].y as f32, z: poly.vertices[i+1].z as f32, _pad: 0.0 },
-                        color: GpuVec3 { x: poly.color.r as f32, y: poly.color.g as f32, z: poly.color.b as f32, _pad: 0.0 },
-                        reflectivity: poly.reflectivity as f32,
-                        _pad1: 0.0, _pad2: 0.0, _pad3: 0.0, _pad4: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 },
-                    });
+                    triangles.push(GpuTriangle::from_polygon_tri(poly, 0, i, i + 1));
                 }
             }
         }
         
-        let lights: Vec<GpuLight> = scene.lights.iter().map(|l| GpuLight {
-            position: GpuVec3 { x: l.position.x as f32, y: l.position.y as f32, z: l.position.z as f32, _pad: 0.0 },
-            intensity: l.intensity as f32,
-            _pad: [0.0; 3],
-        }).collect();
+        let lights: Vec<GpuLight> = scene.lights.iter().map(|l| GpuLight::from_light(l)).collect();
         
         // Ensure we have at least one element for buffers
-        let spheres = if spheres.is_empty() { 
-            vec![GpuSphere { center: GpuVec3 { x: 0.0, y: 0.0, z: -1000.0, _pad: 0.0 }, radius: 0.0, _pad1a: 0.0, _pad1b: 0.0, _pad1c: 0.0, color: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 }, reflectivity: 0.0, _pad2a: 0.0, _pad2b: 0.0, _pad2c: 0.0, _pad3: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 }, _pad4: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 } }]
-        } else { spheres };
-        let triangles = if triangles.is_empty() {
-            vec![GpuTriangle { v0: GpuVec3 { x: 0.0, y: 0.0, z: -1000.0, _pad: 0.0 }, v1: GpuVec3 { x: 0.0, y: 0.0, z: -1000.0, _pad: 0.0 }, v2: GpuVec3 { x: 0.0, y: 0.0, z: -1000.0, _pad: 0.0 }, color: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 }, reflectivity: 0.0, _pad1: 0.0, _pad2: 0.0, _pad3: 0.0, _pad4: GpuVec3 { x: 0.0, y: 0.0, z: 0.0, _pad: 0.0 } }]
-        } else { triangles };
+        let spheres = if spheres.is_empty() { vec![GpuSphere::dummy()] } else { spheres };
+        let triangles = if triangles.is_empty() { vec![GpuTriangle::dummy()] } else { triangles };
         
         let actual_num_spheres = if scene.spheres.is_empty() { 0 } else { spheres.len() as u32 };
         let actual_num_triangles = if scene.triangles.is_empty() && scene.polygons.is_empty() { 0 } else { triangles.len() as u32 };
@@ -270,6 +173,8 @@ impl Renderer for GpuRenderer {
         let workgroups_x = (width + workgroup_size - 1) / workgroup_size;
         let workgroups_y = (height + workgroup_size - 1) / workgroup_size;
         
+        let fov_rad = camera.fov.to_radians();
+        
         // Render loop
         loop {
             let params = GpuParams {
@@ -281,7 +186,13 @@ impl Renderer for GpuRenderer {
                 max_bounces: scene.max_bounces,
                 sample: samples,
                 _pad: 0,
-                background: GpuVec3 { x: scene.background.r as f32, y: scene.background.g as f32, z: scene.background.b as f32, _pad: 0.0 },
+                background: GpuVec3::from_color(&scene.background),
+                camera_pos: GpuVec3::from_vec3(&camera.position),
+                camera_forward: GpuVec3::from_vec3(&forward),
+                camera_right: GpuVec3::from_vec3(&right),
+                camera_up: GpuVec3::from_vec3(&up),
+                fov: fov_rad as f32,
+                _pad2: [0.0; 3],
             };
             
             self.queue.write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
@@ -297,8 +208,16 @@ impl Renderer for GpuRenderer {
             
             samples += 1;
             
-            if start.elapsed() >= time_limit {
-                break;
+            // Check termination conditions
+            if let Some(limit) = samples_limit {
+                if samples >= limit {
+                    break;
+                }
+            }
+            if let Some(limit) = time_limit {
+                if start.elapsed() >= limit {
+                    break;
+                }
             }
         }
         
@@ -310,7 +229,7 @@ impl Renderer for GpuRenderer {
         let buffer_slice = staging_buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| { tx.send(result).unwrap(); });
-        self.device.poll(wgpu::PollType::Wait);
+        let _ = self.device.poll(wgpu::PollType::Wait);
         rx.recv().unwrap().unwrap();
         
         let data = buffer_slice.get_mapped_range();
@@ -335,6 +254,184 @@ impl Renderer for GpuRenderer {
     }
 }
 
+impl Renderer for GpuRenderer {
+    fn name(&self) -> &'static str {
+        "GPU"
+    }
+    
+    fn render(&self, scene: &Scene, camera: &Camera, time_limit: Duration) -> RenderResult {
+        self.render_internal(scene, camera, None, Some(time_limit))
+    }
+    
+    fn render_samples(&self, scene: &Scene, camera: &Camera, num_samples: u32) -> RenderResult {
+        self.render_internal(scene, camera, Some(num_samples), None)
+    }
+}
+
+// GPU data structures (must match shader exactly)
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuVec3 {
+    x: f32,
+    y: f32,
+    z: f32,
+    _pad: f32,
+}
+
+impl GpuVec3 {
+    fn new(x: f32, y: f32, z: f32) -> Self {
+        GpuVec3 { x, y, z, _pad: 0.0 }
+    }
+    
+    fn from_vec3(v: &Vec3) -> Self {
+        GpuVec3::new(v.x as f32, v.y as f32, v.z as f32)
+    }
+    
+    fn from_color(c: &Color) -> Self {
+        GpuVec3::new(c.r as f32, c.g as f32, c.b as f32)
+    }
+    
+    fn zero() -> Self {
+        GpuVec3::new(0.0, 0.0, 0.0)
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuSphere {
+    center: GpuVec3,       // 16 bytes, offset 0
+    radius: f32,           // 4 bytes, offset 16
+    _pad1a: f32,           // 4 bytes, offset 20
+    _pad1b: f32,           // 4 bytes, offset 24
+    _pad1c: f32,           // 4 bytes, offset 28
+    color: GpuVec3,        // 16 bytes, offset 32
+    reflectivity: f32,     // 4 bytes, offset 48
+    _pad2a: f32,           // 4 bytes, offset 52
+    _pad2b: f32,           // 4 bytes, offset 56
+    _pad2c: f32,           // 4 bytes, offset 60
+    _pad3: GpuVec3,        // 16 bytes, offset 64
+    _pad4: GpuVec3,        // 16 bytes, offset 80 = 96 bytes total
+}
+
+impl GpuSphere {
+    fn from_sphere(s: &Sphere) -> Self {
+        GpuSphere {
+            center: GpuVec3::from_vec3(&s.center),
+            radius: s.radius as f32,
+            _pad1a: 0.0, _pad1b: 0.0, _pad1c: 0.0,
+            color: GpuVec3::from_color(&s.color),
+            reflectivity: s.reflectivity as f32,
+            _pad2a: 0.0, _pad2b: 0.0, _pad2c: 0.0,
+            _pad3: GpuVec3::zero(),
+            _pad4: GpuVec3::zero(),
+        }
+    }
+    
+    fn dummy() -> Self {
+        GpuSphere {
+            center: GpuVec3::new(0.0, 0.0, -1000.0),
+            radius: 0.0,
+            _pad1a: 0.0, _pad1b: 0.0, _pad1c: 0.0,
+            color: GpuVec3::zero(),
+            reflectivity: 0.0,
+            _pad2a: 0.0, _pad2b: 0.0, _pad2c: 0.0,
+            _pad3: GpuVec3::zero(),
+            _pad4: GpuVec3::zero(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuTriangle {
+    v0: GpuVec3,           // 16 bytes, offset 0
+    v1: GpuVec3,           // 16 bytes, offset 16
+    v2: GpuVec3,           // 16 bytes, offset 32
+    color: GpuVec3,        // 16 bytes, offset 48
+    reflectivity: f32,     // 4 bytes, offset 64
+    _pad1: f32,            // 4 bytes, offset 68
+    _pad2: f32,            // 4 bytes, offset 72
+    _pad3: f32,            // 4 bytes, offset 76
+    _pad4: GpuVec3,        // 16 bytes, offset 80 = 96 bytes total
+}
+
+impl GpuTriangle {
+    fn from_triangle(t: &Triangle) -> Self {
+        GpuTriangle {
+            v0: GpuVec3::from_vec3(&t.v0),
+            v1: GpuVec3::from_vec3(&t.v1),
+            v2: GpuVec3::from_vec3(&t.v2),
+            color: GpuVec3::from_color(&t.color),
+            reflectivity: t.reflectivity as f32,
+            _pad1: 0.0, _pad2: 0.0, _pad3: 0.0,
+            _pad4: GpuVec3::zero(),
+        }
+    }
+    
+    fn from_polygon_tri(poly: &Polygon, i0: usize, i1: usize, i2: usize) -> Self {
+        GpuTriangle {
+            v0: GpuVec3::from_vec3(&poly.vertices[i0]),
+            v1: GpuVec3::from_vec3(&poly.vertices[i1]),
+            v2: GpuVec3::from_vec3(&poly.vertices[i2]),
+            color: GpuVec3::from_color(&poly.color),
+            reflectivity: poly.reflectivity as f32,
+            _pad1: 0.0, _pad2: 0.0, _pad3: 0.0,
+            _pad4: GpuVec3::zero(),
+        }
+    }
+    
+    fn dummy() -> Self {
+        GpuTriangle {
+            v0: GpuVec3::new(0.0, 0.0, -1000.0),
+            v1: GpuVec3::new(0.0, 0.0, -1000.0),
+            v2: GpuVec3::new(0.0, 0.0, -1000.0),
+            color: GpuVec3::zero(),
+            reflectivity: 0.0,
+            _pad1: 0.0, _pad2: 0.0, _pad3: 0.0,
+            _pad4: GpuVec3::zero(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuLight {
+    position: GpuVec3,     // 16 bytes
+    intensity: f32,        // 4 bytes
+    _pad: [f32; 3],        // 12 bytes = 32 bytes total
+}
+
+impl GpuLight {
+    fn from_light(l: &Light) -> Self {
+        GpuLight {
+            position: GpuVec3::from_vec3(&l.position),
+            intensity: l.intensity as f32,
+            _pad: [0.0; 3],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuParams {
+    width: u32,
+    height: u32,
+    num_spheres: u32,
+    num_triangles: u32,
+    num_lights: u32,
+    max_bounces: u32,
+    sample: u32,
+    _pad: u32,
+    background: GpuVec3,
+    camera_pos: GpuVec3,
+    camera_forward: GpuVec3,
+    camera_right: GpuVec3,
+    camera_up: GpuVec3,
+    fov: f32,
+    _pad2: [f32; 3],
+}
+
 const RAYTRACER_SHADER: &str = r#"
 struct Params {
     width: u32,
@@ -346,6 +443,14 @@ struct Params {
     sample: u32,
     _pad: u32,
     background: vec4<f32>,
+    camera_pos: vec4<f32>,
+    camera_forward: vec4<f32>,
+    camera_right: vec4<f32>,
+    camera_up: vec4<f32>,
+    fov: f32,
+    _pad2a: f32,
+    _pad2b: f32,
+    _pad2c: f32,
 }
 
 struct Sphere {
@@ -568,8 +673,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     
     let idx = y * params.width + x;
     let aspect = f32(params.width) / f32(params.height);
-    let fov = 3.14159265 / 3.0;
-    let scale = tan(fov / 2.0);
+    let scale = tan(params.fov / 2.0);
     
     let jx = select(0.0, (rand_simple(x, y, params.sample) - 0.5) * 0.5, params.sample > 0u);
     let jy = select(0.0, (rand_simple(y, x, params.sample) - 0.5) * 0.5, params.sample > 0u);
@@ -577,9 +681,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let px = (2.0 * (f32(x) + 0.5 + jx) / f32(params.width) - 1.0) * scale * aspect;
     let py = (1.0 - 2.0 * (f32(y) + 0.5 + jy) / f32(params.height)) * scale;
     
+    // Compute ray direction using camera basis
+    let dir = normalize(params.camera_forward.xyz + px * params.camera_right.xyz + py * params.camera_up.xyz);
+    
     var ray: Ray;
-    ray.origin = vec3<f32>(0.0, 0.0, 0.0);
-    ray.direction = normalize(vec3<f32>(px, py, -1.0));
+    ray.origin = params.camera_pos.xyz;
+    ray.direction = dir;
     
     let color = trace_ray(ray);
     

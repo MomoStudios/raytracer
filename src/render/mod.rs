@@ -3,7 +3,7 @@ pub mod gpu;
 
 use image::{ImageBuffer, Rgb};
 use std::time::Duration;
-use crate::types::Scene;
+use crate::types::{Scene, Camera};
 
 /// Result of rendering
 pub struct RenderResult {
@@ -14,6 +14,7 @@ pub struct RenderResult {
 
 /// Trait for render backends
 pub trait Renderer {
-    fn render(&self, scene: &Scene, time_limit: Duration) -> RenderResult;
+    fn render(&self, scene: &Scene, camera: &Camera, time_limit: Duration) -> RenderResult;
+    fn render_samples(&self, scene: &Scene, camera: &Camera, num_samples: u32) -> RenderResult;
     fn name(&self) -> &'static str;
 }

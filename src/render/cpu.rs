@@ -9,14 +9,8 @@ impl CpuRenderer {
     pub fn new() -> Self {
         CpuRenderer
     }
-}
-
-impl Renderer for CpuRenderer {
-    fn name(&self) -> &'static str {
-        "CPU"
-    }
     
-    fn render(&self, scene: &Scene, time_limit: Duration) -> RenderResult {
+    fn render_internal(&self, scene: &Scene, camera: &Camera, samples_limit: Option<u32>, time_limit: Option<Duration>) -> RenderResult {
         let width = scene.width;
         let height = scene.height;
         let total_pixels = width * height;
@@ -25,9 +19,13 @@ impl Renderer for CpuRenderer {
         let mut samples = 0u32;
 
         let aspect = width as f64 / height as f64;
-        let fov = std::f64::consts::PI / 3.0;
+        let fov = camera.fov.to_radians();
         let scale = (fov / 2.0).tan();
-        let camera_pos = Vec3::new(0.0, 0.0, 0.0);
+        
+        // Camera basis vectors
+        let forward = camera.look_at.sub(&camera.position).normalize();
+        let right = forward.cross(&camera.up).normalize();
+        let up = right.cross(&forward).normalize();
 
         let start = Instant::now();
         
@@ -40,9 +38,11 @@ impl Renderer for CpuRenderer {
                     let px = (2.0 * (x as f64 + 0.5 + jx) / width as f64 - 1.0) * scale * aspect;
                     let py = (1.0 - 2.0 * (y as f64 + 0.5 + jy) / height as f64) * scale;
 
+                    let dir = forward.add(&right.mul(px)).add(&up.mul(py)).normalize();
+                    
                     let ray = Ray {
-                        origin: camera_pos.clone(),
-                        direction: Vec3::new(px, py, -1.0).normalize(),
+                        origin: camera.position.clone(),
+                        direction: dir,
                     };
 
                     let color = trace_ray(&ray, scene, 0);
@@ -54,8 +54,16 @@ impl Renderer for CpuRenderer {
             }
             samples += 1;
             
-            if start.elapsed() >= time_limit {
-                break;
+            // Check termination conditions
+            if let Some(limit) = samples_limit {
+                if samples >= limit {
+                    break;
+                }
+            }
+            if let Some(limit) = time_limit {
+                if start.elapsed() >= limit {
+                    break;
+                }
             }
         }
 
@@ -82,6 +90,20 @@ impl Renderer for CpuRenderer {
             samples,
             backend: self.name(),
         }
+    }
+}
+
+impl Renderer for CpuRenderer {
+    fn name(&self) -> &'static str {
+        "CPU"
+    }
+    
+    fn render(&self, scene: &Scene, camera: &Camera, time_limit: Duration) -> RenderResult {
+        self.render_internal(scene, camera, None, Some(time_limit))
+    }
+    
+    fn render_samples(&self, scene: &Scene, camera: &Camera, num_samples: u32) -> RenderResult {
+        self.render_internal(scene, camera, Some(num_samples), None)
     }
 }
 
